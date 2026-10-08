@@ -1,0 +1,24 @@
+# Unreal Engine build output and caches
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Project files that Unreal and Xcode generate
+/*.xcworkspace
+xcuserdata/
+.vs/
+.idea/
+*.sln
+Build/IOS/UBTGenerated/
+
+# Materials made by Content/Python/ks_content.py on the Mac that builds the game
+Content/KS/
+
+# install_iphone.command copies the engine's asset catalog next to the game icon
+Build/IOS/Resources/Assets.xcassets/*
+!Build/IOS/Resources/Assets.xcassets/Contents.json
+!Build/IOS/Resources/Assets.xcassets/AppIcon.appiconset/
+
+.DS_Store
+__pycache__/
