@@ -449,7 +449,10 @@ UAT_FILTER='\*{6,}|Packages Remain|Compiling [0-9]+ shaders|Shaders Left|[Ee]rro
 
 # Explains the usual reasons why the iPhone build fails.
 package_hints() {  # log file
-	if grep -q -i -E "not a valid platform|IOS SDK|Platform IOS is not" "$1"; then
+	if grep -q -i -E "Missing files required to build IOS" "$1"; then
+		note "→ У Unreal Engine не скачана поддержка iOS. Epic Games Launcher → Unreal Engine → Библиотека → ▾ у версии 5.8 → Параметры → отметь iOS → Применить."
+		note "  Дождись конца загрузки и запусти скрипт снова."
+	elif grep -q -i -E "not a valid platform|IOS SDK|Platform IOS is not" "$1"; then
 		note "→ Unreal не видит iOS: проверь, что в Epic Games Launcher у версии 5.8 отмечена поддержка iOS, и что используется Xcode 26."
 	fi
 	if grep -q -E "errSecInternalComponent|User interaction is not allowed|unable to build chain" "$1"; then
@@ -463,13 +466,28 @@ package_hints() {  # log file
 	fi
 }
 
+# UnrealBuildTool often explains an early stop without the word "error", in the lines just before
+# AutomationTool's "Took …s to run dotnet, ExitCode=N", so those lines are shown as they are.
+show_tool_output() {  # log file
+	awk '
+		/to run [^ ]+, ExitCode=[1-9]/ {
+			if (n > 0) print "   Последнее, что написал Unreal перед остановкой:"
+			for (i = (n > 15 ? n - 15 : 0); i < n; i++) print "      " last[i % 15]
+			exit
+		}
+		{ sub(/^[ \t]+/, ""); sub(/\r$/, "") }
+		NF { last[n % 15] = $0; n++ }
+	' "$1" 2>/dev/null
+}
+
+# The packaged app stays in Binaries/IOS. There is no -archive: in UE 5.8 it runs "xcodebuild archive",
+# which fails to copy the game data into the app.
 package_game() {  # log file
 	"$UE/Engine/Build/BatchFiles/RunUAT.sh" BuildCookRun \
 		-project="$PROJECT" -target=Kubostrel -platform=IOS -clientconfig=Development \
 		-nop4 -utf8output -unattended -nocompile -nocompileuat -nocompileeditor -skipbuildeditor \
 		-unrealexe="$UE_EDITOR" \
-		-build -cook -stage -pak -iostore -compressed -package \
-		-archive -archivedirectory="$PACKAGE_DIR" </dev/null 2>&1 | tee "$1" | { grep --line-buffered -E "$UAT_FILTER" || true; }
+		-build -cook -stage -pak -iostore -compressed -package </dev/null 2>&1 | tee "$1" | { grep --line-buffered -E "$UAT_FILTER" || true; }
 	return "${PIPESTATUS[0]}"
 }
 
@@ -498,11 +516,13 @@ if [ "$INSTALL_ONLY" = 0 ]; then
 			note "Повторяю сборку с ID $wanted..."
 			if ! package_game "$LOG_DIR/4-package-retry.log"; then
 				show_errors "$LOG_DIR/4-package-retry.log" 20
+				show_tool_output "$LOG_DIR/4-package-retry.log"
 				package_hints "$LOG_DIR/4-package-retry.log"
 				fail "сборка для iPhone не прошла (журнал: Saved/InstallLogs/4-package-retry.log)."
 			fi
 		else
 			show_errors "$LOG_DIR/4-package.log" 20
+			show_tool_output "$LOG_DIR/4-package.log"
 			package_hints "$LOG_DIR/4-package.log"
 			fail "сборка для iPhone не прошла (журнал: Saved/InstallLogs/4-package.log)."
 		fi
@@ -516,7 +536,7 @@ step "5/5. Устанавливаю на iPhone"
 # The build can take a while; check again which iPhones are plugged in now.
 [ "$INSTALL_ONLY" = 1 ] || wait_for_devices
 
-APP="$("$PY" "$HELPER" find-app "$PACKAGE_DIR" "$PROJECT_DIR/Binaries/IOS")"
+APP="$("$PY" "$HELPER" find-app "$PROJECT_DIR/Binaries/IOS" "$PACKAGE_DIR")"
 [ -n "$APP" ] || fail "не нашёл собранное приложение. Запусти скрипт без --install-only."
 case "$APP" in
 	*.ipa)
@@ -528,6 +548,10 @@ case "$APP" in
 esac
 APP_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" 2>/dev/null)"
 note "Приложение: $APP"
+# The packaged app carries the cooked game data; an app without it opens to a black screen.
+if [ -z "$(find "$APP" \( -name '*.utoc' -o -name '*.pak' \) 2>/dev/null | head -n 1)" ]; then
+	warn "В приложении нет данных игры (файлов .pak и .utoc). Если игра откроется с чёрным экраном, пришли журнал Saved/InstallLogs/4-package.log."
+fi
 
 INSTALLED=""
 TRUST_NEEDED=0
