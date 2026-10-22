@@ -257,7 +257,9 @@ ini_get() { "$PY" "$HELPER" get-ini "$ENGINE_INI" "$1" "$2" | tr -d '\r'; }
 ini_set() { "$PY" "$HELPER" set-ini "$ENGINE_INI" "$1" "$2" "$3" || fail "не смог записать $2 в Config/DefaultEngine.ini."; }
 
 TEAMS="$("$PY" "$HELPER" teams 2>>"$LOG_DIR/teams.log")"
-INI_TEAM="$(ini_get "$XCODE_SECTION" ModernSigningTeam)"
+# Earlier versions of this script kept the team under ModernSigningTeam.
+INI_TEAM="$(ini_get "$XCODE_SECTION" CodeSigningTeam)"
+[ -n "$INI_TEAM" ] || INI_TEAM="$(ini_get "$XCODE_SECTION" ModernSigningTeam)"
 # Recent Xcode no longer lists the teams of a newly added Apple ID in its preferences, so on a new
 # Mac the team is known only once Xcode has made a development certificate for it.
 while [ -z "$TEAM_ID" ] && [ -z "$TEAMS" ] && [ -z "$INI_TEAM" ]; do
@@ -284,17 +286,26 @@ note "Команда для подписи: ${TEAM_NAME:-$TEAM} ($TEAM)"
 if [ "$(printf '%s\n' "$TEAMS" | grep -c .)" -gt 1 ] && [ -z "$TEAM_ID" ]; then
 	note "Xcode знает несколько команд. Другую можно выбрать так: TEAM_ID=XXXXXXXXXX bash install_iphone.command"
 fi
-[ "$TEAM" = "$INI_TEAM" ] || ini_set "$XCODE_SECTION" ModernSigningTeam "$TEAM"
-[ "$(ini_get "$IOS_SECTION" IOSTeamID)" = "$TEAM" ] || ini_set "$IOS_SECTION" IOSTeamID "$TEAM"
-
 if [ -n "$BUNDLE_PREFIX" ]; then
 	printf '%s' "$BUNDLE_PREFIX" | LC_ALL=C grep -Eq '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$' \
 		|| fail "в BUNDLE_PREFIX можно писать только латинские буквы, цифры, точки и дефисы, например com.ivanov."
-	ini_set "$XCODE_SECTION" ModernSigningPrefix "$BUNDLE_PREFIX"
-	ini_set "$IOS_SECTION" BundleIdentifier "$BUNDLE_PREFIX.Kubostrel"
+	PREFIX="$BUNDLE_PREFIX"
+else
+	PREFIX="$(ini_get "$XCODE_SECTION" CodeSigningPrefix)"
+	[ -n "$PREFIX" ] || PREFIX="$(ini_get "$XCODE_SECTION" ModernSigningPrefix)"
+	PREFIX="${PREFIX:-com.mhlgvr}"
 fi
-PREFIX="$(ini_get "$XCODE_SECTION" ModernSigningPrefix)"
-BUNDLE_ID="${PREFIX:-com.mhlgvr}.Kubostrel"
+# Unreal names the app <prefix>.<project name>.
+BUNDLE_ID="$PREFIX.Kubostrel"
+
+# UnrealBuildTool hands these to Xcode. Epic's documentation calls them bUseModernCodeSigning,
+# ModernSigningPrefix and ModernSigningTeam, but Unreal does not read those names.
+ini_update() { [ "$(ini_get "$1" "$2")" = "$3" ] || ini_set "$1" "$2" "$3"; }
+ini_update "$XCODE_SECTION" bUseAutomaticCodeSigning True
+ini_update "$XCODE_SECTION" CodeSigningPrefix "$PREFIX"
+ini_update "$XCODE_SECTION" CodeSigningTeam "$TEAM"
+ini_update "$IOS_SECTION" BundleIdentifier "$BUNDLE_ID"
+ini_update "$IOS_SECTION" IOSTeamID "$TEAM"
 
 list_devices() {
 	rm -f "$LOG_DIR/devices.json"
@@ -452,13 +463,19 @@ package_hints() {  # log file
 	if grep -q -i -E "Missing files required to build IOS" "$1"; then
 		note "→ У Unreal Engine не скачана поддержка iOS. Epic Games Launcher → Unreal Engine → Библиотека → ▾ у версии 5.8 → Параметры → отметь iOS → Применить."
 		note "  Дождись конца загрузки и запусти скрипт снова."
-	elif grep -q -i -E "not a valid platform|IOS SDK|Platform IOS is not" "$1"; then
+	elif grep -q -i -E "Platform IOS is not a valid platform" "$1"; then
 		note "→ Unreal не видит iOS: проверь, что в Epic Games Launcher у версии 5.8 отмечена поддержка iOS, и что используется Xcode 26."
 	fi
 	if grep -q -E "errSecInternalComponent|User interaction is not allowed|unable to build chain" "$1"; then
 		note "→ macOS не дал подписать приложение. Запусти скрипт снова и, когда Mac спросит пароль для «codesign», введи пароль от Mac и нажми «Всегда разрешать»."
 	fi
-	if grep -q -E "No profiles for|requires a development team|No signing certificate" "$1"; then
+	if grep -q -E "requires a development team" "$1"; then
+		note "→ Unreal не передал Xcode команду подписи. Подпись в проекте Xcode, который он сделал:"
+		grep -r -h -o -E "(CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER) = [^;]*" "$PROJECT_DIR/Intermediate/ProjectFilesIOS" 2>/dev/null \
+			| sort -u | head -n 6 | sed 's/^/      /'
+		note "  Открой Kubostrel.uproject, Edit → Project Settings → Platforms → Xcode Projects, включи Use Modern Code Signing,"
+		note "  впиши $TEAM в Modern Signing Team, закрой Unreal и запусти скрипт снова."
+	elif grep -q -E "No profiles for|No signing certificate" "$1"; then
 		note "→ Проблема с подписью: открой Xcode → Settings → Apple Accounts, проверь, что Apple ID на месте, и запусти скрипт снова."
 	fi
 	if grep -q -i "No space left on device" "$1"; then
