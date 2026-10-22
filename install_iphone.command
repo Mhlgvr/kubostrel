@@ -258,6 +258,16 @@ ini_set() { "$PY" "$HELPER" set-ini "$ENGINE_INI" "$1" "$2" "$3" || fail "не �
 
 TEAMS="$("$PY" "$HELPER" teams 2>>"$LOG_DIR/teams.log")"
 INI_TEAM="$(ini_get "$XCODE_SECTION" ModernSigningTeam)"
+# Recent Xcode no longer lists the teams of a newly added Apple ID in its preferences, so on a new
+# Mac the team is known only once Xcode has made a development certificate for it.
+while [ -z "$TEAM_ID" ] && [ -z "$TEAMS" ] && [ -z "$INI_TEAM" ]; do
+	echo
+	note "Не нашёл Apple ID, которым подписать игру. Сделай в Xcode:"
+	note "1. Settings → Apple Accounts (или Accounts) → +, выбери Apple ID и войди, если его там ещё нет."
+	note "2. Выбери свой Apple ID → Manage Certificates… → + → Apple Development → Done."
+	wait_enter "Потом нажми Enter (Ctrl+C — выйти)..." "в Xcode нет Apple ID или сертификата Apple Development (INSTALL.md, шаг 1)."
+	TEAMS="$("$PY" "$HELPER" teams 2>>"$LOG_DIR/teams.log")"
+done
 if [ -n "$TEAM_ID" ]; then
 	TEAM="$TEAM_ID"
 elif [ -n "$INI_TEAM" ] && printf '%s\n' "$TEAMS" | cut -f1 | grep -qx "$INI_TEAM"; then
@@ -266,10 +276,8 @@ elif [ -n "$TEAMS" ]; then
 	# A paid team signs for a year, a free Personal Team for 7 days, so a paid one wins.
 	TEAM="$(printf '%s\n' "$TEAMS" | awk -F'\t' '$3 == "0" { print $1; exit }')"
 	[ -n "$TEAM" ] || TEAM="$(printf '%s\n' "$TEAMS" | head -n 1 | cut -f1)"
-elif [ -n "$INI_TEAM" ]; then
-	TEAM="$INI_TEAM"
 else
-	fail "в Xcode нет Apple ID. Открой Xcode → Settings → Apple Accounts (или Accounts), нажми + и войди своим Apple ID, потом запусти скрипт снова."
+	TEAM="$INI_TEAM"
 fi
 TEAM_NAME="$(printf '%s\n' "$TEAMS" | awk -F'\t' -v t="$TEAM" '$1 == t && $2 != "-" { print $2; exit }')"
 note "Команда для подписи: ${TEAM_NAME:-$TEAM} ($TEAM)"

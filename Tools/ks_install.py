@@ -9,6 +9,7 @@
 Every listing prints one tab-separated line per item.
 """
 
+import datetime
 import json
 import os
 import plistlib
@@ -17,6 +18,10 @@ import subprocess
 import sys
 
 TEAM_ID = re.compile(r"[A-Z0-9]{10}")
+PROFILE_FOLDERS = (
+    "~/Library/Developer/Xcode/UserData/Provisioning Profiles",  # Xcode 16 and newer
+    "~/Library/MobileDevice/Provisioning Profiles",
+)
 
 
 def _run(args, text=False, stdin=None):
@@ -34,7 +39,8 @@ def teams():
         if TEAM_ID.fullmatch(team_id or "") and team_id not in [t[0] for t in found]:
             found.append((team_id, name, free))
 
-    # Xcode keeps the teams of the Apple IDs added in Settings > Accounts in its preferences.
+    # Older Xcode keeps the teams of the Apple IDs added in Settings > Accounts in its preferences.
+    # Recent versions no longer do that for a newly added Apple ID, hence the other sources below.
     try:
         prefs = plistlib.loads(_run(["defaults", "export", "com.apple.dt.Xcode", "-"]))
     except Exception:
@@ -64,8 +70,40 @@ def teams():
         if team:
             add(team.group(1), org.group(1).strip() if org else "", True)
 
+    # The team last chosen in an Xcode project, and the teams of the signing profiles Xcode made.
+    last = prefs.get("IDEProvisioningTeamManagerLastSelectedTeamID") if isinstance(prefs, dict) else None
+    if isinstance(last, str):
+        add(last, "", True)
+    for team_id, name, free in _profile_teams():
+        add(team_id, name, free)
+
     for team_id, name, free in found:
         print("%s\t%s\t%d" % (team_id, name.replace("\t", " ") or "-", 1 if free else 0))
+
+
+def _profile_teams():
+    """Yields (team id, team name, free) for each signing profile on this Mac that has not expired."""
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    for folder in PROFILE_FOLDERS:
+        folder = os.path.expanduser(folder)
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith((".mobileprovision", ".provisionprofile")):
+                continue
+            try:
+                profile = plistlib.loads(_run(["security", "cms", "-D", "-i", os.path.join(folder, name)]))
+                created, expires = profile["CreationDate"], profile["ExpirationDate"]
+                team_id = profile["TeamIdentifier"][0]
+                if expires <= now:
+                    continue
+                # A free Personal Team gets profiles for 7 days, a paid team for a year.
+                free = (expires - created).days < 30
+            except Exception:
+                continue
+            yield team_id, str(profile.get("TeamName", "")), free
 
 
 def devices(path):
