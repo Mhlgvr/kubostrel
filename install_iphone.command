@@ -1,10 +1,13 @@
 #!/bin/bash
-# Builds Kubostrel and installs it on the iPhones connected to this Mac, or with --mac starts it on the Mac.
+# Builds Kubostrel and installs it on the iPhones connected to this Mac, or with --mac starts it on the Mac,
+# or with --testflight uploads it to App Store Connect for TestFlight.
 # Run it in Terminal (or double-click it in Finder). INSTALL.md explains the setup.
 #
 #   bash install_iphone.command                  build, then install on every iPhone on a cable or Wi-Fi
 #   bash install_iphone.command --install-only   install the last build again without rebuilding
 #   bash install_iphone.command --mac            build and start the game on this Mac (play_mac.command)
+#   bash install_iphone.command --testflight     build the App Store version and upload it to TestFlight
+#   bash install_iphone.command --upload-only    upload the last TestFlight build again without rebuilding
 #
 # Optional environment variables:
 #   UE_ROOT=/path/to/UE_5.8          Unreal Engine folder, if the Epic Games Launcher put it elsewhere
@@ -16,16 +19,27 @@ set -o pipefail
 
 INSTALL_ONLY=0
 MAC_MODE=0
+STORE_MODE=0
+UPLOAD_ONLY=0
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) INSTALL_ONLY=1 ;;
 		--mac) MAC_MODE=1 ;;
+		--testflight) STORE_MODE=1 ;;
+		--upload-only) STORE_MODE=1; UPLOAD_ONLY=1 ;;
 		*) echo "Неизвестный параметр: $arg"; exit 2 ;;
 	esac
 done
-if [ "$MAC_MODE" = 1 ] && [ "$INSTALL_ONLY" = 1 ]; then
-	echo "--install-only нужен только для iPhone, для Mac запусти без него."
+if [ $((INSTALL_ONLY + MAC_MODE + STORE_MODE)) -gt 1 ]; then
+	echo "Укажи что-то одно: --install-only, --mac, --testflight или --upload-only."
 	exit 2
+fi
+# How to run this script again the same way, for the hints.
+RERUN="bash install_iphone.command"
+if [ "$UPLOAD_ONLY" = 1 ]; then
+	RERUN="$RERUN --upload-only"
+elif [ "$STORE_MODE" = 1 ]; then
+	RERUN="$RERUN --testflight"
 fi
 
 cd "$(dirname "$0")" || exit 1
@@ -35,6 +49,10 @@ ENGINE_INI="$PROJECT_DIR/Config/DefaultEngine.ini"
 HELPER="$PROJECT_DIR/Tools/ks_install.py"
 LOG_DIR="$PROJECT_DIR/Saved/InstallLogs"
 PACKAGE_DIR="$PROJECT_DIR/Saved/Packages"
+STORE_DIR="$PROJECT_DIR/Saved/TestFlight"
+ARCHIVE="$STORE_DIR/Kubostrel.xcarchive"
+# The paid team a TestFlight build was signed with, for Macs where Xcode does not say which team is paid.
+STORE_TEAM_FILE="$STORE_DIR/team.txt"
 XCODE_SECTION="/Script/MacTargetPlatform.XcodeProjectSettings"
 IOS_SECTION="/Script/IOSRuntimeSettings.IOSRuntimeSettings"
 mkdir -p "$LOG_DIR" || exit 1
@@ -75,11 +93,18 @@ wait_enter() {
 
 [ "$(uname -s)" = "Darwin" ] || fail "этот скрипт работает только на Mac."
 [ -f "$PROJECT" ] || fail "не нашёл Kubostrel.uproject рядом со скриптом."
+if [ "$UPLOAD_ONLY" = 1 ] && [ ! -f "$ARCHIVE/Info.plist" ]; then
+	fail "ещё нет сборки для TestFlight. Сначала запусти: bash install_iphone.command --testflight"
+fi
 
 if [ "$MAC_MODE" = 1 ]; then
 	STEPS=3
 	echo "${BOLD}Кубострел: запуск на Mac${RESET}"
 	echo "Первый запуск долгий: Unreal компилирует игру и готовит шейдеры. Mac не уснёт, пока скрипт работает."
+elif [ "$STORE_MODE" = 1 ]; then
+	STEPS=5
+	echo "${BOLD}Кубострел: сборка и загрузка в TestFlight${RESET}"
+	[ "$UPLOAD_ONLY" = 1 ] || echo "Версия для App Store собирается заново, без отладки, это долго. Mac не уснёт, пока скрипт работает."
 else
 	STEPS=5
 	echo "${BOLD}Кубострел: сборка и установка на iPhone${RESET}"
@@ -251,40 +276,103 @@ if [ "$MAC_MODE" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-step "3/5. Подпись: Apple ID и iPhone"
+if [ "$STORE_MODE" = 1 ]; then
+	step "3/5. Подпись: платная команда Apple"
+else
+	step "3/5. Подпись: Apple ID и iPhone"
+fi
 
 ini_get() { "$PY" "$HELPER" get-ini "$ENGINE_INI" "$1" "$2" | tr -d '\r'; }
 ini_set() { "$PY" "$HELPER" set-ini "$ENGINE_INI" "$1" "$2" "$3" || fail "не смог записать $2 в Config/DefaultEngine.ini."; }
 
-TEAMS="$("$PY" "$HELPER" teams 2>>"$LOG_DIR/teams.log")"
+list_teams() { "$PY" "$HELPER" teams "$STORE_TEAM_FILE" 2>>"$LOG_DIR/teams.log"; }
+# 0 for a team of the paid Apple Developer Program, 1 for a free Personal Team, ? if not known.
+team_kind() { printf '%s\n' "$TEAMS" | awk -F'\t' -v t="$1" '$1 == t { print $3; exit }'; }
+
+# Only a team of the paid Apple Developer Program can upload to App Store Connect. Xcode 26 does not
+# say which team is paid until it has made a signing profile for it, so the first time the script
+# asks for the Team ID.
+choose_store_team() {
+	local paid typed
+	if [ -n "$TEAM_ID" ]; then
+		TEAM="$TEAM_ID"
+	else
+		paid="$(printf '%s\n' "$TEAMS" | awk -F'\t' '$3 == "0" { print $1 }')"
+		if [ -n "$INI_TEAM" ] && printf '%s\n' "$paid" | grep -qx "$INI_TEAM"; then
+			TEAM="$INI_TEAM"
+		else
+			TEAM="$(printf '%s\n' "$paid" | head -n 1)"
+		fi
+	fi
+	[ -n "$TEAM" ] && [ "$(team_kind "$TEAM")" != 1 ] && return 0
+	[ -z "$TEAM_ID" ] || fail "$TEAM_ID — бесплатная команда (Personal Team), с ней в TestFlight не загрузить. Нужен Team ID платной команды (INSTALL.md, раздел «TestFlight»)."
+	echo
+	note "Для TestFlight нужна платная команда Apple Developer Program, а Xcode её пока не показывает."
+	note "1. Дождись письма от Apple, что членство в Apple Developer Program активно."
+	note "2. Открой https://developer.apple.com/account, войди и скопируй Team ID из раздела Membership details."
+	while :; do
+		[ -r /dev/tty ] && [ -t 1 ] || fail "не знаю Team ID платной команды. Запусти так: TEAM_ID=XXXXXXXXXX $RERUN"
+		read -r -p "   Вставь Team ID и нажми Enter (Ctrl+C — выйти): " typed </dev/tty
+		typed="$(printf '%s' "$typed" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+		if ! printf '%s' "$typed" | grep -Eq '^[A-Z0-9]{10}$'; then
+			note "Team ID — это 10 латинских букв и цифр, например A1B2C3D4E5."
+		elif [ "$(team_kind "$typed")" = 1 ]; then
+			note "$typed — бесплатная команда (Personal Team). Нужен Team ID из раздела Membership details."
+		else
+			TEAM="$typed"
+			return 0
+		fi
+	done
+}
+
+# Signing makes Xcode fetch a profile for the team, and how long it lasts tells a paid team from a
+# free one. The team is kept for the next upload.
+check_store_team() {
+	TEAMS="$(list_teams)"
+	if [ "$(team_kind "$TEAM")" = 1 ]; then
+		rm -f "$STORE_TEAM_FILE"
+		fail "$TEAM — бесплатная команда (Personal Team), с ней в TestFlight не загрузить. Запусти скрипт снова и введи Team ID из раздела Membership details на https://developer.apple.com/account."
+	fi
+	mkdir -p "$STORE_DIR" && printf '%s\n' "$TEAM" >"$STORE_TEAM_FILE"
+}
+
+TEAMS="$(list_teams)"
 # Earlier versions of this script kept the team under ModernSigningTeam.
 INI_TEAM="$(ini_get "$XCODE_SECTION" CodeSigningTeam)"
 [ -n "$INI_TEAM" ] || INI_TEAM="$(ini_get "$XCODE_SECTION" ModernSigningTeam)"
-# Recent Xcode no longer lists the teams of a newly added Apple ID in its preferences, so on a new
-# Mac the team is known only once Xcode has made a development certificate for it.
-while [ -z "$TEAM_ID" ] && [ -z "$TEAMS" ] && [ -z "$INI_TEAM" ]; do
-	echo
-	note "Не нашёл Apple ID, которым подписать игру. Сделай в Xcode:"
-	note "1. Settings → Apple Accounts (или Accounts) → +, выбери Apple ID и войди, если его там ещё нет."
-	note "2. Выбери свой Apple ID → Manage Certificates… → + → Apple Development → Done."
-	wait_enter "Потом нажми Enter (Ctrl+C — выйти)..." "в Xcode нет Apple ID или сертификата Apple Development (INSTALL.md, шаг 1)."
-	TEAMS="$("$PY" "$HELPER" teams 2>>"$LOG_DIR/teams.log")"
-done
-if [ -n "$TEAM_ID" ]; then
-	TEAM="$TEAM_ID"
-elif [ -n "$INI_TEAM" ] && printf '%s\n' "$TEAMS" | cut -f1 | grep -qx "$INI_TEAM"; then
-	TEAM="$INI_TEAM"
-elif [ -n "$TEAMS" ]; then
-	# A paid team signs for a year, a free Personal Team for 7 days, so a paid one wins.
-	TEAM="$(printf '%s\n' "$TEAMS" | awk -F'\t' '$3 == "0" { print $1; exit }')"
-	[ -n "$TEAM" ] || TEAM="$(printf '%s\n' "$TEAMS" | head -n 1 | cut -f1)"
+if [ "$STORE_MODE" = 1 ]; then
+	choose_store_team
 else
-	TEAM="$INI_TEAM"
+	# Recent Xcode no longer lists the teams of a newly added Apple ID in its preferences, so on a new
+	# Mac the team is known only once Xcode has made a development certificate for it.
+	while [ -z "$TEAM_ID" ] && [ -z "$TEAMS" ] && [ -z "$INI_TEAM" ]; do
+		echo
+		note "Не нашёл Apple ID, которым подписать игру. Сделай в Xcode:"
+		note "1. Settings → Apple Accounts (или Accounts) → +, выбери Apple ID и войди, если его там ещё нет."
+		note "2. Выбери свой Apple ID → Manage Certificates… → + → Apple Development → Done."
+		wait_enter "Потом нажми Enter (Ctrl+C — выйти)..." "в Xcode нет Apple ID или сертификата Apple Development (INSTALL.md, шаг 1)."
+		TEAMS="$(list_teams)"
+	done
+	if [ -n "$TEAM_ID" ]; then
+		TEAM="$TEAM_ID"
+	elif [ -n "$INI_TEAM" ] && printf '%s\n' "$TEAMS" | cut -f1 | grep -qx "$INI_TEAM"; then
+		TEAM="$INI_TEAM"
+	elif [ -n "$TEAMS" ]; then
+		# A paid team signs for a year, a free Personal Team for 7 days, so a paid one wins.
+		TEAM="$(printf '%s\n' "$TEAMS" | awk -F'\t' '$3 == "0" { print $1; exit }')"
+		[ -n "$TEAM" ] || TEAM="$(printf '%s\n' "$TEAMS" | head -n 1 | cut -f1)"
+	else
+		TEAM="$INI_TEAM"
+	fi
 fi
 TEAM_NAME="$(printf '%s\n' "$TEAMS" | awk -F'\t' -v t="$TEAM" '$1 == t && $2 != "-" { print $2; exit }')"
 note "Команда для подписи: ${TEAM_NAME:-$TEAM} ($TEAM)"
-if [ "$(printf '%s\n' "$TEAMS" | grep -c .)" -gt 1 ] && [ -z "$TEAM_ID" ]; then
-	note "Xcode знает несколько команд. Другую можно выбрать так: TEAM_ID=XXXXXXXXXX bash install_iphone.command"
+if [ -z "$TEAM_ID" ]; then
+	# For TestFlight only the paid teams are a choice.
+	choices="$(printf '%s\n' "$TEAMS" | awk -F'\t' -v store="$STORE_MODE" 'NF && (store == 0 || $3 == "0")' | grep -c .)"
+	if [ "$choices" -gt 1 ]; then
+		note "Xcode знает несколько команд. Другую можно выбрать так: TEAM_ID=XXXXXXXXXX $RERUN"
+	fi
 fi
 if [ -n "$BUNDLE_PREFIX" ]; then
 	printf '%s' "$BUNDLE_PREFIX" | LC_ALL=C grep -Eq '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$' \
@@ -352,12 +440,28 @@ EOF
 	done
 }
 
-wait_for_devices
-while IFS=$'\t' read -r id udid name os devmode pairing transport; do
-	[ -n "$id" ] && note "iPhone: $name, iOS $os ($( [ "$transport" = wired ] && echo "по кабелю" || echo "по Wi-Fi" ))"
-done <<EOF
+show_devices() {
+	local id udid name os devmode pairing transport
+	while IFS=$'\t' read -r id udid name os devmode pairing transport; do
+		[ -n "$id" ] && note "iPhone: $name, iOS $os ($( [ "$transport" = wired ] && echo "по кабелю" || echo "по Wi-Fi" ))"
+	done <<EOF
 $DEVICES
 EOF
+}
+
+if [ "$STORE_MODE" = 0 ]; then
+	wait_for_devices
+	show_devices
+elif [ "$UPLOAD_ONLY" = 0 ]; then
+	# TestFlight needs no iPhone, but Xcode signs only for a team that has at least one registered.
+	DEVICES="$(list_devices)" || exit 1
+	if [ -n "$DEVICES" ]; then
+		wait_for_devices
+		show_devices
+	else
+		note "iPhone не подключён. Он нужен в первый раз: Xcode подписывает игру, только если в команде есть хотя бы один iPhone."
+	fi
+fi
 
 # Xcode 26 came out before iOS 27, so it may not work with an iPhone that already has iOS 27.
 # Signing and installing can then be done by a newer Xcode, while the game is still built with Xcode 26.
@@ -380,6 +484,11 @@ EOF
 	note "  Потом запусти скрипт снова: подпишет и поставит игру новый Xcode, а соберёт её, как и раньше, Xcode $XCODE_VERSION."
 	return 0
 }
+
+ID_TAKEN_PATTERN="cannot be registered to your development team|not available. Change your bundle identifier"
+# Set by register_game: a taken app ID is reported in ID_TAKEN instead of with hints.
+ID_FALLBACK=0
+ID_TAKEN=0
 
 # Builds a tiny placeholder app for the iPhone. With a free Apple ID this is how the phone gets
 # registered with the team and how the signing profile for the game is created.
@@ -408,6 +517,10 @@ register_device() {  # udid, name, bundle id, iOS version
 $XCODE
 $others
 EOF
+	if [ "$ID_FALLBACK" = 1 ] && grep -q -i -E "$ID_TAKEN_PATTERN" "$log"; then
+		ID_TAKEN=1
+		return 1
+	fi
 	echo
 	note "Xcode не смог подписать приложение для $2:"
 	count="$(printf '%s' "$failed" | grep -c .)"
@@ -420,10 +533,11 @@ $failed
 EOF
 	if grep -q -i -E "No Account|No Accounts|not signed in|session has expired|sign in" "$log"; then
 		note "→ Войди в Apple ID в Xcode: Xcode → Settings → Apple Accounts (или Accounts) → +."
+		[ "$STORE_MODE" = 1 ] && note "  Если он там уже есть, удали его кнопкой − и добавь снова: так Xcode увидит платную команду."
 	fi
-	if grep -q -i -E "cannot be registered to your development team|not available. Change your bundle identifier" "$log"; then
-		note "→ ID $3 занят другим Apple ID. Придумай любое слово латиницей и запусти так:"
-		note "  BUNDLE_PREFIX=com.ivanov bash install_iphone.command"
+	if grep -q -i -E "$ID_TAKEN_PATTERN" "$log"; then
+		note "→ ID $3 занят другим Apple ID или другой командой. Придумай любое слово латиницей и запусти так:"
+		note "  BUNDLE_PREFIX=com.ivanov $RERUN"
 	fi
 	if grep -q -i -E "maximum number of|reached the limit|limit of [0-9]" "$log"; then
 		note "→ Бесплатный Apple ID разрешает 3 своих приложения на iPhone и 10 новых ID в неделю."
@@ -449,10 +563,37 @@ EOF
 	return 0
 }
 
-if [ "$INSTALL_ONLY" = 0 ]; then
+# An app ID belongs to the team that registered it first, and Xcode registers the game's ID for the
+# free Personal Team on the first install. So when the paid team (or a friend's Apple ID) finds the
+# ID taken, another one is picked once, unless BUNDLE_PREFIX says which to use.
+register_game() {
+	local status
+	ID_TAKEN=0
+	ID_FALLBACK=1
+	[ -z "$BUNDLE_PREFIX" ] || ID_FALLBACK=0
+	case "$PREFIX" in *.games) ID_FALLBACK=0 ;; esac
+	register_all "$BUNDLE_ID"
+	status=$?
+	ID_FALLBACK=0
+	[ "$status" = 0 ] && return 0
+	[ "$ID_TAKEN" = 1 ] || return 1
+	if [ "$STORE_MODE" = 1 ]; then
+		note "ID $BUNDLE_ID уже занят другой командой Apple (скорее всего, твоей бесплатной). Беру $PREFIX.games.Kubostrel."
+	else
+		note "ID $BUNDLE_ID уже занят другим Apple ID или другой командой. Беру $PREFIX.games.Kubostrel."
+	fi
+	PREFIX="$PREFIX.games"
+	BUNDLE_ID="$PREFIX.Kubostrel"
+	ini_update "$XCODE_SECTION" CodeSigningPrefix "$PREFIX"
+	ini_update "$IOS_SECTION" BundleIdentifier "$BUNDLE_ID"
+	register_all "$BUNDLE_ID"
+}
+
+if [ "$INSTALL_ONLY" = 0 ] && [ "$UPLOAD_ONLY" = 0 ] && [ -n "$DEVICES" ]; then
 	note "Если Mac спросит пароль для «codesign», введи пароль от Mac и нажми «Всегда разрешать»."
-	register_all "$BUNDLE_ID" || fail "iPhone не зарегистрирован для подписи (подробности выше)."
+	register_game || fail "iPhone не зарегистрирован для подписи (подробности выше)."
 	good "iPhone зарегистрирован, подпись готова"
+	[ "$STORE_MODE" = 0 ] || check_store_team
 fi
 
 # ---------------------------------------------------------------------------------------------
@@ -475,6 +616,8 @@ package_hints() {  # log file
 			| sort -u | head -n 6 | sed 's/^/      /'
 		note "  Открой Kubostrel.uproject, Edit → Project Settings → Platforms → Xcode Projects, включи Use Modern Code Signing,"
 		note "  впиши $TEAM в Modern Signing Team, закрой Unreal и запусти скрипт снова."
+	elif grep -q -i -E "has no devices|no devices from which" "$1"; then
+		note "→ Xcode подписывает игру, только если в команде есть хотя бы один iPhone. Подключи iPhone кабелем и запусти скрипт снова."
 	elif grep -q -E "No profiles for|No signing certificate" "$1"; then
 		note "→ Проблема с подписью: открой Xcode → Settings → Apple Accounts, проверь, что Apple ID на месте, и запусти скрипт снова."
 	fi
@@ -497,21 +640,32 @@ show_tool_output() {  # log file
 	' "$1" 2>/dev/null
 }
 
+# TestFlight gets the Shipping build: no console or debug tools, and it runs faster.
+CONFIG=Development
+[ "$STORE_MODE" = 0 ] || CONFIG=Shipping
+BUILD_MARK="$LOG_DIR/4-package.start"
+
 # The packaged app stays in Binaries/IOS. There is no -archive: in UE 5.8 it runs "xcodebuild archive",
 # which fails to copy the game data into the app. -SkipZenStore cooks to plain files: a cook into the
 # Zen storage server (the default since UE 5.8) tries every network address of the Mac in turn and
 # can hang on one of them.
 package_game() {  # log file
 	"$UE/Engine/Build/BatchFiles/RunUAT.sh" BuildCookRun \
-		-project="$PROJECT" -target=Kubostrel -platform=IOS -clientconfig=Development \
+		-project="$PROJECT" -target=Kubostrel -platform=IOS -clientconfig="$CONFIG" \
 		-nop4 -utf8output -unattended -nocompile -nocompileuat -nocompileeditor -skipbuildeditor \
 		-unrealexe="$UE_EDITOR" -SkipZenStore \
 		-build -cook -stage -pak -iostore -compressed -package </dev/null 2>&1 | tee "$1" | { grep --line-buffered -E "$UAT_FILTER" || true; }
 	return "${PIPESTATUS[0]}"
 }
 
-if [ "$INSTALL_ONLY" = 0 ]; then
-	step "4/5. Собираю игру"
+if [ "$INSTALL_ONLY" = 0 ] && [ "$UPLOAD_ONLY" = 0 ]; then
+	if [ "$STORE_MODE" = 1 ]; then
+		step "4/5. Собираю версию для TestFlight"
+		note "Пока идёт сборка, создай приложение в App Store Connect, если его ещё нет (INSTALL.md, раздел «TestFlight»)."
+		note "Его Bundle ID: $BUNDLE_ID"
+	else
+		step "4/5. Собираю игру"
+	fi
 
 	build_editor_and_materials
 
@@ -535,6 +689,7 @@ if [ "$INSTALL_ONLY" = 0 ]; then
 		fi
 	done
 
+	touch "$BUILD_MARK"
 	note "Собираю версию для iPhone: код, шейдеры, упаковка и подпись..."
 	if ! package_game "$LOG_DIR/4-package.log"; then
 		# If Unreal asked for a different app ID than expected, sign up that one too and retry once.
@@ -555,6 +710,119 @@ if [ "$INSTALL_ONLY" = 0 ]; then
 		fi
 	fi
 	good "Игра собрана"
+	[ "$STORE_MODE" = 0 ] || check_store_team
+fi
+
+# Leaves in APP the app Unreal made, taking it out of the .ipa if it made one.
+open_app() {  # .app or .ipa
+	APP="$1"
+	case "$APP" in
+		*.ipa)
+			rm -rf "$LOG_DIR/ipa" && mkdir -p "$LOG_DIR/ipa"
+			ditto -x -k "$APP" "$LOG_DIR/ipa" || fail "не смог распаковать $APP."
+			APP="$(ls -d "$LOG_DIR/ipa/Payload/"*.app 2>/dev/null | head -n 1)"
+			[ -n "$APP" ] || fail "в архиве нет приложения."
+			;;
+	esac
+}
+
+# The packaged app carries the cooked game data; an app without it opens to a black screen.
+has_game_data() { [ -n "$(find "$1" \( -name '*.utoc' -o -name '*.pak' \) 2>/dev/null | head -n 1)" ]; }
+
+# Signs the archive for the App Store and uploads it with the Apple ID in Xcode. Xcode makes the
+# App Store certificate and profile itself and gives the build the next free build number.
+upload_build() {  # log file
+	rm -rf "$STORE_DIR/Upload"
+	xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$STORE_DIR/ExportOptions.plist" \
+		-exportPath "$STORE_DIR/Upload" -allowProvisioningUpdates </dev/null 2>&1 | tee "$1" \
+		| { grep --line-buffered -E 'Progress|[Uu]ploaded|[Uu]pload (succeeded|failed)|EXPORT (SUCCEEDED|FAILED)' || true; }
+	return "${PIPESTATUS[0]}"
+}
+
+# Explains the usual reasons why App Store Connect does not take the build.
+upload_hints() {  # log file
+	if grep -q -i -E "personal (development )?team|not support .*(App Store|distribution)" "$1"; then
+		rm -f "$STORE_TEAM_FILE"
+		note "→ $TEAM — бесплатная команда (Personal Team), а загружать в TestFlight может только платная."
+		note "  Запусти bash install_iphone.command --testflight и введи Team ID из раздела Membership details"
+		note "  на https://developer.apple.com/account."
+	elif grep -q -i -E "No Account|not signed in|session has expired|sign in|authenticat" "$1"; then
+		note "→ Войди в Apple ID в Xcode: Settings → Apple Accounts. Если он там уже есть, удали его кнопкой − и добавь снова."
+		note "  Потом загрузи сборку ещё раз: bash install_iphone.command --upload-only"
+	elif grep -q -i -E "agreement" "$1"; then
+		note "→ Apple просит принять новое соглашение: открой https://developer.apple.com/account и согласись с ним."
+		note "  Потом загрузи сборку ещё раз: bash install_iphone.command --upload-only"
+	else
+		note "→ Эту же сборку можно попробовать загрузить из Xcode: дважды щёлкни Saved/TestFlight/Kubostrel.xcarchive"
+		note "  в Finder и в окне Organizer нажми Distribute App → TestFlight & App Store."
+		note "  Если и там ошибка, пришли журнал Saved/InstallLogs/6-upload.log."
+	fi
+}
+
+# ---------------------------------------------------------------------------------------------
+if [ "$STORE_MODE" = 1 ]; then
+	step "5/5. Загружаю в App Store Connect"
+	if [ "$UPLOAD_ONLY" = 0 ]; then
+		found="$("$PY" "$HELPER" find-app --newer "$BUILD_MARK" "$PROJECT_DIR/Binaries/IOS" "$PACKAGE_DIR")"
+		[ -n "$found" ] || fail "не нашёл приложение, которое собрал Unreal (журнал: Saved/InstallLogs/4-package.log)."
+		open_app "$found"
+		note "Приложение: $APP"
+		has_game_data "$APP" || fail "в приложении нет данных игры (файлов .pak и .utoc), такое загружать нельзя. Пришли журнал Saved/InstallLogs/4-package.log."
+		if ! "$PY" "$HELPER" store-archive "$APP" "$ARCHIVE" "$TEAM" "$UE/Engine/Build/IOS/Resources/UEMetadata/PrivacyInfo.xcprivacy" \
+			>"$LOG_DIR/5-archive.log" 2>&1; then
+			tail -n 5 "$LOG_DIR/5-archive.log" | sed 's/^/      /'
+			fail "не смог подготовить сборку для App Store (журнал: Saved/InstallLogs/5-archive.log)."
+		fi
+		added="$(awk -F'\t' '$1 == "added" { printf "%s%s", (n++ ? ", " : ""), $2 }' "$LOG_DIR/5-archive.log")"
+		[ -z "$added" ] || note "Добавил в приложение то, что требует App Store: $added"
+		if awk -F'\t' '$1 == "missing" && $2 == "icon" { found = 1 } END { exit !found }' "$LOG_DIR/5-archive.log"; then
+			warn "В приложении нет иконки, App Store Connect может не принять сборку."
+		fi
+	fi
+	APP_ID="$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleIdentifier" "$ARCHIVE/Info.plist" 2>/dev/null)"
+	VERSION="$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleShortVersionString" "$ARCHIVE/Info.plist" 2>/dev/null)"
+	cat >"$STORE_DIR/ExportOptions.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>$TEAM</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<true/>
+	<key>uploadSymbols</key>
+	<false/>
+</dict>
+</plist>
+EOF
+	size="$(du -sh "$ARCHIVE" 2>/dev/null | cut -f1)"
+	note "Подписываю сборку для App Store и загружаю её${size:+ ($size)}..."
+	while ! upload_build "$LOG_DIR/6-upload.log"; do
+		show_errors "$LOG_DIR/6-upload.log"
+		if grep -q -i -E "No suitable application records|Cannot determine the Apple ID|app record|application record" "$LOG_DIR/6-upload.log"; then
+			echo
+			note "В App Store Connect ещё нет приложения с Bundle ID $APP_ID. Создай его:"
+			note "https://appstoreconnect.apple.com/apps → + → «Новое приложение». Платформа iOS, название Кубострел"
+			note "(если занято, добавь слово), язык «Русский», Bundle ID $APP_ID, SKU kubostrel, доступ «Полный»."
+			wait_enter "Потом нажми Enter, и я загружу сборку ещё раз..." \
+				"в App Store Connect нет приложения $APP_ID. Создай его и запусти: bash install_iphone.command --upload-only"
+			continue
+		fi
+		upload_hints "$LOG_DIR/6-upload.log"
+		fail "App Store Connect не принял сборку (журнал: Saved/InstallLogs/6-upload.log)."
+	done
+	good "Сборка загружена"
+	echo
+	echo "${GREEN}${BOLD}Готово!${RESET} Кубострел${VERSION:+ $VERSION} загружен в App Store Connect. Заняло $((SECONDS / 60)) мин."
+	echo "Через 10–30 минут, когда Apple его обработает, сборка появится в App Store Connect → Кубострел → TestFlight."
+	echo "Как дать друзьям ссылку на игру, написано в INSTALL.md, раздел «TestFlight»."
+	exit 0
 fi
 
 # ---------------------------------------------------------------------------------------------
@@ -563,20 +831,12 @@ step "5/5. Устанавливаю на iPhone"
 # The build can take a while; check again which iPhones are plugged in now.
 [ "$INSTALL_ONLY" = 1 ] || wait_for_devices
 
-APP="$("$PY" "$HELPER" find-app "$PROJECT_DIR/Binaries/IOS" "$PACKAGE_DIR")"
-[ -n "$APP" ] || fail "не нашёл собранное приложение. Запусти скрипт без --install-only."
-case "$APP" in
-	*.ipa)
-		rm -rf "$LOG_DIR/ipa" && mkdir -p "$LOG_DIR/ipa"
-		ditto -x -k "$APP" "$LOG_DIR/ipa" || fail "не смог распаковать $APP."
-		APP="$(ls -d "$LOG_DIR/ipa/Payload/"*.app 2>/dev/null | head -n 1)"
-		[ -n "$APP" ] || fail "в архиве нет приложения."
-		;;
-esac
+found="$("$PY" "$HELPER" find-app "$PROJECT_DIR/Binaries/IOS" "$PACKAGE_DIR")"
+[ -n "$found" ] || fail "не нашёл собранное приложение. Запусти скрипт без --install-only."
+open_app "$found"
 APP_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" 2>/dev/null)"
 note "Приложение: $APP"
-# The packaged app carries the cooked game data; an app without it opens to a black screen.
-if [ -z "$(find "$APP" \( -name '*.utoc' -o -name '*.pak' \) 2>/dev/null | head -n 1)" ]; then
+if ! has_game_data "$APP"; then
 	warn "В приложении нет данных игры (файлов .pak и .utoc). Если игра откроется с чёрным экраном, пришли журнал Saved/InstallLogs/4-package.log."
 fi
 
@@ -619,4 +879,9 @@ if [ "$TRUST_NEEDED" = 1 ]; then
 	echo "Потом открой Кубострел на главном экране."
 fi
 echo
-echo "Бесплатная подпись Apple действует 7 дней. Потом подключи iPhone и запусти этот файл ещё раз."
+TEAMS="$(list_teams)"
+if [ "$(team_kind "$TEAM")" = 0 ]; then
+	echo "Подпись платной команды Apple действует год. Потом подключи iPhone и запусти этот файл ещё раз."
+else
+	echo "Бесплатная подпись Apple действует 7 дней. Потом подключи iPhone и запусти этот файл ещё раз."
+fi
