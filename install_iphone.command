@@ -498,12 +498,14 @@ show_tool_output() {  # log file
 }
 
 # The packaged app stays in Binaries/IOS. There is no -archive: in UE 5.8 it runs "xcodebuild archive",
-# which fails to copy the game data into the app.
+# which fails to copy the game data into the app. -SkipZenStore cooks to plain files: a cook into the
+# Zen storage server (the default since UE 5.8) tries every network address of the Mac in turn and
+# can hang on one of them.
 package_game() {  # log file
 	"$UE/Engine/Build/BatchFiles/RunUAT.sh" BuildCookRun \
 		-project="$PROJECT" -target=Kubostrel -platform=IOS -clientconfig=Development \
 		-nop4 -utf8output -unattended -nocompile -nocompileuat -nocompileeditor -skipbuildeditor \
-		-unrealexe="$UE_EDITOR" \
+		-unrealexe="$UE_EDITOR" -SkipZenStore \
 		-build -cook -stage -pak -iostore -compressed -package </dev/null 2>&1 | tee "$1" | { grep --line-buffered -E "$UAT_FILTER" || true; }
 	return "${PIPESTATUS[0]}"
 }
@@ -524,6 +526,14 @@ if [ "$INSTALL_ONLY" = 0 ]; then
 			[ -e "$PROJECT_ASSETS/$(basename "$item")" ] || cp -R "$item" "$PROJECT_ASSETS/"
 		done
 	fi
+
+	# A Zen cook leaves ue.projectstore, which would send the game on the iPhone to look for the
+	# Mac's Zen server, so what an earlier Zen cook left behind is cooked again from scratch.
+	for dir in "$PROJECT_DIR/Saved/Cooked/IOS" "$PROJECT_DIR/Saved/StagedBuilds/IOS"; do
+		if [ -f "$dir/ue.projectstore" ]; then
+			rm -rf "$dir" || fail "не смог удалить $dir (это данные прошлой сборки, их можно удалить вручную)."
+		fi
+	done
 
 	note "Собираю версию для iPhone: код, шейдеры, упаковка и подпись..."
 	if ! package_game "$LOG_DIR/4-package.log"; then
