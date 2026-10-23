@@ -38,7 +38,9 @@ void AKSHUD::DrawHUD()
 	{
 		return;
 	}
-	UI.Begin(Canvas, PC->GetPointers(), UKSAssets::Get(this));
+	UI.Begin(Canvas, PC->GetPointers(), PC->GetPointerSpaceSize(), UKSAssets::Get(this));
+	// The controller places the touch controls with the same mapping, so a finger lands on what is drawn.
+	PC->SetScreenToUI(UI.ScreenToUI);
 	UKSGameInstance* GI = Cast<UKSGameInstance>(GetGameInstance());
 	AKSGameState* GS = GetWorld()->GetGameState<AKSGameState>();
 	AKSCharacter* Robot = PC->GetKSCharacter();
@@ -99,6 +101,12 @@ void AKSHUD::DrawHUD()
 	{
 		const float X = PC->GetLayout().SafeX - 30.f;
 		UI.Text(FString::Printf(TEXT("%d FPS"), FMath::RoundToInt(PC->GetFPS())), FVector2D(X, 136.f), 24.f, KSColors::Dim);
+	}
+
+	// The pause menu and the end screen are made of buttons, so show where each tap lands.
+	if (PC->IsTouchMode() && (PC->IsMenuOpen() || bEnded))
+	{
+		UI.DrawTouches((float)GetWorld()->GetRealTimeSeconds());
 	}
 }
 

@@ -5,11 +5,29 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/App.h"
+#if PLATFORM_IOS
+#include "IOS/IOSAppDelegate.h"
+#endif
 
 namespace
 {
 	constexpr int32 KSMaxTouches = 10;
 	constexpr int32 KSMousePointerId = 100;
+
+#if PLATFORM_IOS
+	// iOS reports a finger at its spot in the game's view, in points, times the view's content scale.
+	FVector2D KSViewPixelSize()
+	{
+		UIView* View = (UIView*)[IOSAppDelegate GetDelegate].IOSView;
+		if (View == nil)
+		{
+			return FVector2D::ZeroVector;
+		}
+		const CGSize Points = View.bounds.size;
+		const CGFloat ContentScale = View.contentScaleFactor;
+		return FVector2D(Points.width * ContentScale, Points.height * ContentScale);
+	}
+#endif
 }
 
 AKSBasePlayerController::AKSBasePlayerController()
@@ -47,17 +65,27 @@ void AKSBasePlayerController::PlayerTick(float DeltaTime)
 	}
 }
 
-FVector2D AKSBasePlayerController::GetScreenSize() const
+FVector2D AKSBasePlayerController::GetPointerSpaceSize() const
 {
+#if PLATFORM_IOS
+	// The screen is not always drawn at the resolution fingers are reported in (the view's scale can
+	// change after the screen was sized), so fingers are measured against the view itself.
+	const FVector2D ViewPixels = KSViewPixelSize();
+	if (ViewPixels.X >= 1.0 && ViewPixels.Y >= 1.0)
+	{
+		return ViewPixels;
+	}
+#endif
 	int32 X = 0;
 	int32 Y = 0;
 	GetViewportSize(X, Y);
 	return FVector2D(FMath::Max(X, 1), FMath::Max(Y, 1));
 }
 
-float AKSBasePlayerController::GetUIScale() const
+FKSScreenToUI AKSBasePlayerController::GetScreenToUI() const
 {
-	return GetScreenSize().Y / 1080.f;
+	// Until the HUD has drawn once, its canvas is taken to cover the whole screen.
+	return bHasScreenToUI ? ScreenToUI : FKSScreenToUI::ForScreen(GetPointerSpaceSize());
 }
 
 void AKSBasePlayerController::UpdatePointers()

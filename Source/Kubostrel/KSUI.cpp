@@ -41,7 +41,7 @@ FKSTouchLayout FKSTouchLayout::Make(float ScreenWidthUnits)
 	return L;
 }
 
-void FKSUI::Begin(UCanvas* InCanvas, const TArray<FKSPointer>& PixelPointers, UKSAssets* InAssets)
+void FKSUI::Begin(UCanvas* InCanvas, const TArray<FKSPointer>& PixelPointers, const FVector2D& ScreenSize, UKSAssets* InAssets)
 {
 	Canvas = InCanvas;
 	Assets = InAssets;
@@ -52,12 +52,57 @@ void FKSUI::Begin(UCanvas* InCanvas, const TArray<FKSPointer>& PixelPointers, UK
 	Height = 1080.f;
 	Width = PixelWidth / Scale;
 
-	Pointers = PixelPointers;
-	for (FKSPointer& P : Pointers)
+	// Fingers are measured from the corner of the whole screen. On a phone the engine draws the HUD
+	// inside the safe area, clear of the notch and the home indicator, which moves the canvas origin
+	// and makes the canvas smaller than the screen.
+	FVector2D CanvasPixelsPerScreenPixel(1.f, 1.f);
+	FVector2D Origin = FVector2D::ZeroVector;
+	if (Canvas)
 	{
-		P.Pos /= Scale;
-		P.StartPos /= Scale;
-		P.Delta /= Scale;
+		const FVector2D FullCanvas(FMath::Max(Canvas->UnsafeSizeX, 1), FMath::Max(Canvas->UnsafeSizeY, 1));
+		CanvasPixelsPerScreenPixel = FullCanvas / FVector2D(FMath::Max(ScreenSize.X, 1.f), FMath::Max(ScreenSize.Y, 1.f));
+		if (Canvas->ClipX < FullCanvas.X - 0.5f)
+		{
+			Origin.X = Canvas->SafeZonePadX;
+		}
+		if (Canvas->ClipY < FullCanvas.Y - 0.5f)
+		{
+			Origin.Y = Canvas->SafeZonePadY;
+		}
+	}
+	ScreenToUI.Scale = CanvasPixelsPerScreenPixel / Scale;
+	ScreenToUI.Offset = -Origin / Scale;
+	ScreenToUI.Size = FVector2D(Width, Height);
+
+	Pointers.Reset(PixelPointers.Num());
+	for (const FKSPointer& P : PixelPointers)
+	{
+		Pointers.Add(ScreenToUI.Convert(P));
+	}
+}
+
+void FKSUI::DrawTouches(float Now)
+{
+	const float FlashTime = 0.35f;
+	FLinearColor Color = KSColors::Text;
+	for (const FKSPointer& P : Pointers)
+	{
+		if (P.bDown)
+		{
+			Color.A = 0.45f;
+			Ring(P.Pos, 34.f, Color);
+		}
+		else if (P.bReleased)
+		{
+			RecentTaps.Add({ P.Pos, Now });
+		}
+	}
+	RecentTaps.RemoveAll([Now, FlashTime](const FTouchMark& Mark) { return Now < Mark.Time || Now - Mark.Time > FlashTime; });
+	for (const FTouchMark& Mark : RecentTaps)
+	{
+		const float T = (Now - Mark.Time) / FlashTime;
+		Color.A = 0.55f * (1.f - T);
+		Ring(Mark.Pos, 34.f + 26.f * T, Color);
 	}
 }
 

@@ -48,7 +48,8 @@ enum class EKSAlign : uint8
 class FKSUI
 {
 public:
-	void Begin(UCanvas* InCanvas, const TArray<FKSPointer>& PixelPointers, UKSAssets* InAssets);
+	// ScreenSize is the whole screen in the pixels the pointers are measured in.
+	void Begin(UCanvas* InCanvas, const TArray<FKSPointer>& PixelPointers, const FVector2D& ScreenSize, UKSAssets* InAssets);
 
 	void Rect(const FBox2D& Box, const FLinearColor& Color, bool bAdditive = false);
 	void Frame(const FBox2D& Box, const FLinearColor& Color, float Thickness = 3.f);
@@ -73,6 +74,9 @@ public:
 	bool PressedIn(const FBox2D& Box) const;
 	bool AnyTap() const;
 
+	// A ring under each finger and a short flash where it lifted, so a tap shows where it landed.
+	void DrawTouches(float Now);
+
 	static FBox2D BoxAt(float X, float Y, float W, float H) { return FBox2D(FVector2D(X, Y), FVector2D(X + W, Y + H)); }
 	static FBox2D BoxCentered(const FVector2D& Center, float W, float H)
 	{
@@ -85,11 +89,20 @@ public:
 	float Scale = 1.f;
 	float Width = 1920.f;
 	float Height = 1080.f;
+	// How the pointers were moved from screen pixels onto this canvas.
+	FKSScreenToUI ScreenToUI;
 	// Pointers in UI units.
 	TArray<FKSPointer> Pointers;
 
 private:
+	struct FTouchMark
+	{
+		FVector2D Pos;
+		float Time;
+	};
+
 	UFont* Font = nullptr;
+	TArray<FTouchMark> RecentTaps;
 };
 
 namespace KSColors

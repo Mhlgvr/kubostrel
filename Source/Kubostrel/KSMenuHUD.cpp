@@ -87,7 +87,7 @@ void AKSMenuHUD::DrawHUD()
 	{
 		return;
 	}
-	UI.Begin(Canvas, PC->GetPointers(), UKSAssets::Get(this));
+	UI.Begin(Canvas, PC->GetPointers(), PC->GetPointerSpaceSize(), UKSAssets::Get(this));
 	const FString Message = GI->TakeMenuMessage();
 	if (!Message.IsEmpty())
 	{
@@ -130,6 +130,11 @@ void AKSMenuHUD::DrawHUD()
 		{
 			DrawPopup();
 		}
+	}
+
+	if (PC->IsTouchMode())
+	{
+		UI.DrawTouches((float)GetWorld()->GetRealTimeSeconds());
 	}
 }
 
