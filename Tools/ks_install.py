@@ -14,6 +14,7 @@ Every listing prints one tab-separated line per item.
 
 import datetime
 import json
+import mmap
 import os
 import plistlib
 import re
@@ -53,6 +54,34 @@ PRIVACY_MANIFEST = {
         )
     ],
 }
+
+# App Store Connect refuses a build whose code names an API that reads private data, unless
+# Info.plist says why the app needs it. This holds even for engine code the game never runs, so a
+# key is added when the code names one of its APIs. The game reads none of this, and the texts say so.
+PURPOSE_STRINGS = (
+    ("NSMicrophoneUsageDescription", "Кубострел не пользуется микрофоном.",
+     (b"recordPermission", b"RecordPermission", b"AVAudioSessionCategoryPlayAndRecord",
+      b"AVAudioSessionCategoryRecord", b"AVAudioRecorder", b"AVCaptureDevice")),
+    ("NSCameraUsageDescription", "Кубострел не пользуется камерой.",
+     (b"AVCaptureDevice", b"UIImagePickerController")),
+    ("NSPhotoLibraryUsageDescription", "Кубострел не открывает фотографии.",
+     (b"PHPhotoLibrary", b"UIImagePickerController", b"ALAssetsLibrary")),
+    ("NSPhotoLibraryAddUsageDescription", "Кубострел не сохраняет фотографии.",
+     (b"PHPhotoLibrary", b"UIImageWriteToSavedPhotosAlbum", b"ALAssetsLibrary")),
+    ("NSLocationWhenInUseUsageDescription", "Кубострел не узнаёт, где ты.", (b"CLLocationManager",)),
+    ("NSLocationAlwaysAndWhenInUseUsageDescription", "Кубострел не узнаёт, где ты.",
+     (b"requestAlwaysAuthorization",)),
+    ("NSBluetoothAlwaysUsageDescription", "Кубострел не пользуется Bluetooth.",
+     (b"CBCentralManager", b"CBPeripheralManager")),
+    ("NSContactsUsageDescription", "Кубострел не читает контакты.", (b"CNContactStore", b"ABAddressBook")),
+    ("NSCalendarsFullAccessUsageDescription", "Кубострел не читает календарь.", (b"EKEventStore",)),
+    ("NSRemindersFullAccessUsageDescription", "Кубострел не читает напоминания.", (b"EKEventStore",)),
+    ("NSMotionUsageDescription", "Кубострел не считает шаги.", (b"CMMotionActivityManager", b"CMPedometer")),
+    ("NSSpeechRecognitionUsageDescription", "Кубострел не распознаёт речь.", (b"SFSpeechRecognizer",)),
+    ("NSAppleMusicUsageDescription", "Кубострел не открывает медиатеку.",
+     (b"MPMediaLibrary", b"MPMediaQuery", b"MPMediaPickerController")),
+    ("NSUserTrackingUsageDescription", "Кубострел не следит за тобой.", (b"ATTrackingManager",)),
+)
 
 
 def _run(args, text=False, stdin=None):
@@ -273,6 +302,32 @@ def _signing_identity(app):
     return match.group(1).strip() if match else ""
 
 
+def _code_files(app, info):
+    """The app's executable and the code of the frameworks inside it."""
+    files = [os.path.join(app, info.get("CFBundleExecutable", ""))]
+    for dirpath, dirnames, filenames in os.walk(os.path.join(app, "Frameworks")):
+        files += [os.path.join(dirpath, name) for name in filenames
+                  if name.endswith(".dylib") or os.path.basename(dirpath) == name + ".framework"]
+    return [path for path in files if os.path.isfile(path)]
+
+
+def _mentioned(paths, apis):
+    """Which of the API names appear anywhere in the files."""
+    found = set()
+    for path in paths:
+        if os.path.getsize(path) == 0:
+            continue
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            found.update(api for api in apis if api not in found and data.find(api) != -1)
+    return found
+
+
+def _store_version(value, default):
+    """App Store Connect takes versions of one to three numbers, such as 1.0.0."""
+    numbers = re.findall(r"\d+", str(value))[:3]
+    return ".".join(numbers) if numbers else default
+
+
 def store_archive(app, archive, team, privacy):
     """Makes an Xcode archive of the app, which xcodebuild -exportArchive signs for the App Store
     and uploads. Unreal 5.8 cannot archive the game itself: its "xcodebuild archive" leaves the
@@ -288,8 +343,19 @@ def store_archive(app, archive, team, privacy):
         data = f.read()
     info = plistlib.loads(data)
     added = [key for key, value in STORE_PLIST_KEYS if key not in info]
+    info.update((key, value) for key, value in STORE_PLIST_KEYS if key in added)
+    wanted = {api for _, _, apis in PURPOSE_STRINGS for api in apis}
+    mentioned = _mentioned(_code_files(target, info), wanted)
+    for key, text, apis in PURPOSE_STRINGS:
+        if key not in info and mentioned.intersection(apis):
+            info[key] = text
+            added.append(key)
+    for key, default in (("CFBundleShortVersionString", "1.0.0"), ("CFBundleVersion", "1")):
+        version = _store_version(info.get(key, ""), default)
+        if info.get(key) != version:
+            info[key] = version
+            added.append("%s %s" % (key, version))
     if added:
-        info.update((key, value) for key, value in STORE_PLIST_KEYS if key in added)
         with open(plist, "wb") as f:
             plistlib.dump(info, f, fmt=plistlib.FMT_BINARY if data.startswith(b"bplist") else plistlib.FMT_XML)
     # Apple refuses builds that use certain system APIs without saying why in this file.
@@ -310,8 +376,8 @@ def store_archive(app, archive, team, privacy):
         "ApplicationPath": "Applications/" + name,
         "Architectures": ["arm64"],
         "CFBundleIdentifier": str(info.get("CFBundleIdentifier", "")),
-        "CFBundleShortVersionString": str(info.get("CFBundleShortVersionString", "1.0")),
-        "CFBundleVersion": str(info.get("CFBundleVersion", "1")),
+        "CFBundleShortVersionString": info["CFBundleShortVersionString"],
+        "CFBundleVersion": info["CFBundleVersion"],
         "Team": team,
     }
     identity = _signing_identity(target)

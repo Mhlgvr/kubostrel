@@ -752,6 +752,10 @@ upload_hints() {  # log file
 	elif grep -q -i -E "agreement" "$1"; then
 		note "→ Apple просит принять новое соглашение: открой https://developer.apple.com/account и согласись с ним."
 		note "  Потом загрузи сборку ещё раз: bash install_iphone.command --upload-only"
+	elif grep -q -i -E "signing certificate|cloud signing|distribution certificate" "$1"; then
+		note "→ Xcode не нашёл, чем подписать игру для App Store. В Xcode открой Settings → Apple Accounts, выбери Apple ID"
+		note "  и команду без пометки Personal Team, нажми Manage Certificates… → + → Apple Distribution → Done."
+		note "  Потом загрузи сборку ещё раз: bash install_iphone.command --upload-only"
 	else
 		note "→ Эту же сборку можно попробовать загрузить из Xcode: дважды щёлкни Saved/TestFlight/Kubostrel.xcarchive"
 		note "  в Finder и в окне Organizer нажми Distribute App → TestFlight & App Store."
@@ -821,6 +825,7 @@ EOF
 	echo
 	echo "${GREEN}${BOLD}Готово!${RESET} Кубострел${VERSION:+ $VERSION} загружен в App Store Connect. Заняло $((SECONDS / 60)) мин."
 	echo "Через 10–30 минут, когда Apple его обработает, сборка появится в App Store Connect → Кубострел → TestFlight."
+	echo "Если Apple пришлёт письмо, что со сборкой что-то не так, пришли его текст."
 	echo "Как дать друзьям ссылку на игру, написано в INSTALL.md, раздел «TestFlight»."
 	exit 0
 fi
