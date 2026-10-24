@@ -59,7 +59,7 @@ void AKSPlayerController::PlayerTick(float DeltaTime)
 	}
 
 	const float Now = GetLocalTime();
-	Layout = FKSTouchLayout::Make(GetScreenSize().X / FMath::Max(GetUIScale(), 0.01f));
+	Layout = FKSTouchLayout::Make(GetScreenToUI().Size.X);
 
 	AKSCharacter* Robot = GetKSCharacter();
 	if (Robot != LastPawn.Get())
@@ -206,7 +206,7 @@ AKSPlayerController::EKSTouchRole AKSPlayerController::ClaimPointer(const FKSPoi
 
 void AKSPlayerController::HandleTouch(float DeltaTime, AKSCharacter* Robot, bool bCanAct, FVector2D& OutMove, FVector2D& OutLook, bool& bOutFire)
 {
-	const float Scale = FMath::Max(GetUIScale(), 0.01f);
+	const FKSScreenToUI ToUI = GetScreenToUI();
 	const UKSGameInstance* GI = Cast<UKSGameInstance>(GetGameInstance());
 	const float LookScale = KSTouchLookScale * (GI ? GI->GetSettings().Sensitivity : 1.f);
 
@@ -218,10 +218,7 @@ void AKSPlayerController::HandleTouch(float DeltaTime, AKSCharacter* Robot, bool
 	TSet<int32> Seen;
 	for (const FKSPointer& PixelPointer : GetPointers())
 	{
-		FKSPointer P = PixelPointer;
-		P.Pos /= Scale;
-		P.StartPos /= Scale;
-		P.Delta /= Scale;
+		const FKSPointer P = ToUI.Convert(PixelPointer);
 		Seen.Add(P.Id);
 
 		if (P.bReleased)

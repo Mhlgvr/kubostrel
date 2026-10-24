@@ -24,9 +24,16 @@ public:
 	// Pointers in screen pixels, updated once per frame.
 	const TArray<FKSPointer>& GetPointers() const { return Pointers; }
 	bool IsTouchMode() const { return bTouchMode; }
-	FVector2D GetScreenSize() const;
-	// Pixels per UI unit; the UI is laid out for a screen 1080 units tall.
-	float GetUIScale() const;
+	// The whole screen in the pixels the pointers are reported in.
+	FVector2D GetPointerSpaceSize() const;
+	// How screen pixels map to UI units (the UI is laid out for a screen 1080 units tall), as the HUD
+	// last drew its canvas, so touches land on what the HUD draws.
+	FKSScreenToUI GetScreenToUI() const;
+	void SetScreenToUI(const FKSScreenToUI& InScreenToUI)
+	{
+		ScreenToUI = InScreenToUI;
+		bHasScreenToUI = true;
+	}
 
 protected:
 	void UpdatePointers();
@@ -35,6 +42,8 @@ protected:
 	TObjectPtr<UKSAudioSynth> Synth;
 
 	TArray<FKSPointer> Pointers;
+	FKSScreenToUI ScreenToUI;
+	bool bHasScreenToUI = false;
 	bool bTouchMode = false;
 	float SmoothedFPS = 60.f;
 

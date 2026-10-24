@@ -142,3 +142,32 @@ struct FKSPointer
 	bool bPressed = false;
 	bool bReleased = false;
 };
+
+// How screen pixels, where the engine reports fingers and the mouse, map to UI units on the HUD canvas.
+struct FKSScreenToUI
+{
+	// UI = Pixel * Scale + Offset.
+	FVector2D Scale = FVector2D(1.f, 1.f);
+	FVector2D Offset = FVector2D::ZeroVector;
+	// The canvas in UI units; it is always 1080 units tall.
+	FVector2D Size = FVector2D(1920.f, 1080.f);
+
+	// The mapping for a canvas that covers the whole screen.
+	static FKSScreenToUI ForScreen(const FVector2D& ScreenSize)
+	{
+		FKSScreenToUI Map;
+		const float UIPerPixel = 1080.f / FMath::Max(ScreenSize.Y, 1.f);
+		Map.Scale = FVector2D(UIPerPixel, UIPerPixel);
+		Map.Size = FVector2D(ScreenSize.X * UIPerPixel, 1080.f);
+		return Map;
+	}
+
+	FKSPointer Convert(const FKSPointer& Pixel) const
+	{
+		FKSPointer P = Pixel;
+		P.Pos = Pixel.Pos * Scale + Offset;
+		P.StartPos = Pixel.StartPos * Scale + Offset;
+		P.Delta = Pixel.Delta * Scale;
+		return P;
+	}
+};

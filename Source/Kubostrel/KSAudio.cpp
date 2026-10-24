@@ -274,7 +274,8 @@ bool UKSAudioSynth::Init(int32& SampleRate)
 
 void UKSAudioSynth::RenderSounds(int32 SampleRate)
 {
-	const double Start = FPlatformTime::Seconds();
+	// Only logged, and the Shipping build leaves the log out.
+	[[maybe_unused]] const double Start = FPlatformTime::Seconds();
 	const float SR = float(FMath::Max(SampleRate, 8000));
 	Buffers.SetNum(KSSound::Count);
 	for (int32 i = 0; i < KSSound::Count; ++i)

@@ -33,7 +33,7 @@ AKSFXManager* AKSFXManager::Get(const UObject* WorldContext)
 	{
 		return GKSFXManager.Get();
 	}
-	for (TActorIterator<AKSFXManager> It(World); It; ++It)
+	if (TActorIterator<AKSFXManager> It(World); It)
 	{
 		GKSFXManager = *It;
 		return *It;

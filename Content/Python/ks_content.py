@@ -20,15 +20,14 @@ mel = unreal.MaterialEditingLibrary
 
 
 def _asset_api():
-    """Editor asset functions: the editor's own subsystem when it exists, else the older library."""
-    if hasattr(unreal, "EditorAssetSubsystem"):
-        subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
-        if subsystem is not None:
-            return subsystem
-    return unreal.EditorAssetLibrary
+    """The editor's asset functions, or None while there is no editor yet.
+
+    EditorAssetLibrary is no fallback: in UE 5.8 it crashes the process when called without an editor.
+    """
+    return unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
 
 
-eal = _asset_api()
+eal = None  # set by ensure_materials()
 
 
 def _log(text):
@@ -271,6 +270,11 @@ def _is_current(name):
 
 
 def ensure_materials(force=False):
+    global eal
+    eal = _asset_api()
+    if eal is None:
+        unreal.log_warning("[Kubostrel] No editor is running, so the materials were not created.")
+        return 0
     if not eal.does_directory_exist(MATERIAL_DIR):
         eal.make_directory(MATERIAL_DIR)
     built = 0

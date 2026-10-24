@@ -169,13 +169,11 @@ void UKSGameInstance::CancelJoin()
 		return;
 	}
 	bJoining = false;
-	if (FWorldContext* Context = GetWorldContext())
+	// The engine drops a connection attempt when it travels to a "?closed" URL, then loads the menu map again.
+	// UEngine::CancelPending would stay on the current map, but it is not public in UE 5.8.
+	if (GEngine && GetWorld())
 	{
-		Context->TravelURL.Empty();
-		if (GEngine)
-		{
-			GEngine->CancelPending(*Context);
-		}
+		GEngine->SetClientTravel(GetWorld(), TEXT("?closed"), TRAVEL_Absolute);
 	}
 }
 

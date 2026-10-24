@@ -58,7 +58,7 @@ AKSArenaBuilder* AKSArenaBuilder::Find(const UObject* WorldContext)
 	{
 		return GKSArenaBuilder.Get();
 	}
-	for (TActorIterator<AKSArenaBuilder> It(World); It; ++It)
+	if (TActorIterator<AKSArenaBuilder> It(World); It)
 	{
 		GKSArenaBuilder = *It;
 		return *It;
