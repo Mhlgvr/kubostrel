@@ -8,6 +8,7 @@
 #   bash install_iphone.command --mac            build and start the game on this Mac (play_mac.command)
 #   bash install_iphone.command --testflight     build the App Store version and upload it to TestFlight
 #   bash install_iphone.command --upload-only    upload the last TestFlight build again without rebuilding
+#   bash install_iphone.command --ipa            pack the last build into Saved/Kubostrel.ipa for friends
 #
 # Optional environment variables:
 #   UE_ROOT=/path/to/UE_5.8          Unreal Engine folder, if the Epic Games Launcher put it elsewhere
@@ -21,17 +22,19 @@ INSTALL_ONLY=0
 MAC_MODE=0
 STORE_MODE=0
 UPLOAD_ONLY=0
+IPA_MODE=0
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) INSTALL_ONLY=1 ;;
 		--mac) MAC_MODE=1 ;;
 		--testflight) STORE_MODE=1 ;;
 		--upload-only) STORE_MODE=1; UPLOAD_ONLY=1 ;;
+		--ipa) IPA_MODE=1 ;;
 		*) echo "Неизвестный параметр: $arg"; exit 2 ;;
 	esac
 done
-if [ $((INSTALL_ONLY + MAC_MODE + STORE_MODE)) -gt 1 ]; then
-	echo "Укажи что-то одно: --install-only, --mac, --testflight или --upload-only."
+if [ $((INSTALL_ONLY + MAC_MODE + STORE_MODE + IPA_MODE)) -gt 1 ]; then
+	echo "Укажи что-то одно: --install-only, --mac, --testflight, --upload-only или --ipa."
 	exit 2
 fi
 # How to run this script again the same way, for the hints.
@@ -101,6 +104,9 @@ if [ "$MAC_MODE" = 1 ]; then
 	STEPS=3
 	echo "${BOLD}Кубострел: запуск на Mac${RESET}"
 	echo "Первый запуск долгий: Unreal компилирует игру и готовит шейдеры. Mac не уснёт, пока скрипт работает."
+elif [ "$IPA_MODE" = 1 ]; then
+	STEPS=3
+	echo "${BOLD}Кубострел: файл игры для друзей${RESET}"
 elif [ "$STORE_MODE" = 1 ]; then
 	STEPS=5
 	echo "${BOLD}Кубострел: сборка и загрузка в TestFlight${RESET}"
@@ -176,7 +182,7 @@ if [ "$MAC_MODE" = 0 ]; then
 	METAL_SDK=iphoneos
 	xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1 || fail "в Xcode нет iOS SDK. Открой Xcode → Settings → Components и установи iOS."
 fi
-if ! xcrun --sdk "$METAL_SDK" metal --version >/dev/null 2>&1; then
+if [ "$IPA_MODE" = 0 ] && ! xcrun --sdk "$METAL_SDK" metal --version >/dev/null 2>&1; then
 	note "Скачиваю Metal Toolchain для Xcode, он нужен для шейдеров..."
 	xcodebuild -downloadComponent MetalToolchain || fail "не скачался Metal Toolchain. Поставь его вручную: Xcode → Settings → Components → Metal Toolchain."
 fi
@@ -272,6 +278,49 @@ if [ "$MAC_MODE" = 1 ]; then
 	fi
 	echo
 	echo "Игра закрыта. Запустить снова: bash play_mac.command"
+	exit 0
+fi
+
+# Leaves in APP the app Unreal made, taking it out of the .ipa if it made one.
+open_app() {  # .app or .ipa
+	APP="$1"
+	case "$APP" in
+		*.ipa)
+			rm -rf "$LOG_DIR/ipa" && mkdir -p "$LOG_DIR/ipa"
+			ditto -x -k "$APP" "$LOG_DIR/ipa" || fail "не смог распаковать $APP."
+			APP="$(ls -d "$LOG_DIR/ipa/Payload/"*.app 2>/dev/null | head -n 1)"
+			[ -n "$APP" ] || fail "в архиве нет приложения."
+			;;
+	esac
+}
+
+# The packaged app carries the cooked game data; an app without it opens to a black screen.
+has_game_data() { [ -n "$(find "$1" \( -name '*.utoc' -o -name '*.pak' \) 2>/dev/null | head -n 1)" ]; }
+
+# ---------------------------------------------------------------------------------------------
+# Friends without this Mac install the game with their own free Apple ID (INSTALL.md, «Друзья ставят
+# сами»), and the sideloading tool signs it for them. The last build is packed as it is, so everyone
+# plays the same version. The signing profile is left out: it lists the UDIDs of the iPhones signed up.
+if [ "$IPA_MODE" = 1 ]; then
+	step "3/3. Упаковываю игру в файл для друзей"
+	found="$("$PY" "$HELPER" find-app "$PROJECT_DIR/Binaries/IOS" "$PACKAGE_DIR")"
+	[ -n "$found" ] || fail "ещё нет собранной игры. Сначала поставь её на свой iPhone: bash install_iphone.command"
+	open_app "$found"
+	note "Приложение: $APP"
+	has_game_data "$APP" || fail "в приложении нет данных игры (файлов .pak и .utoc). Собери игру заново: bash install_iphone.command"
+	IPA="$PROJECT_DIR/Saved/Kubostrel.ipa"
+	rm -rf "$LOG_DIR/ipa-pack" "$IPA"
+	mkdir -p "$LOG_DIR/ipa-pack/Payload" || exit 1
+	cp -R "$APP" "$LOG_DIR/ipa-pack/Payload/" || fail "не смог скопировать приложение."
+	rm -f "$LOG_DIR/ipa-pack/Payload/$(basename "$APP")/embedded.mobileprovision"
+	(cd "$LOG_DIR/ipa-pack" && zip -q -r -y "$IPA" Payload) || fail "не смог упаковать игру в $IPA."
+	rm -rf "$LOG_DIR/ipa-pack"
+	good "Файл готов: Saved/Kubostrel.ipa ($(du -h "$IPA" | cut -f1))"
+	echo
+	echo "Отправь его друзьям, например в Telegram. Как поставить его на iPhone, написано в INSTALL.md,"
+	echo "раздел «Друзья ставят сами». Когда обновишь игру, сделай и отправь файл заново: играть вместе"
+	echo "можно только с одной версией."
+	open -R "$IPA" >/dev/null 2>&1
 	exit 0
 fi
 
@@ -539,7 +588,10 @@ EOF
 		note "→ ID $3 занят другим Apple ID или другой командой. Придумай любое слово латиницей и запусти так:"
 		note "  BUNDLE_PREFIX=com.ivanov $RERUN"
 	fi
-	if grep -q -i -E "maximum number of|reached the limit|limit of [0-9]" "$log"; then
+	if grep -q -i -E "maximum number of registered|maximum number of (iPhone|iOS) devices" "$log"; then
+		note "→ Бесплатный Apple ID пускает не больше 3 iPhone за неделю. Подожди, пока пройдёт неделя с тех пор,"
+		note "  как подключался другой iPhone, или пусть друг поставит игру сам (INSTALL.md, «Друзья ставят сами»)."
+	elif grep -q -i -E "maximum number of|reached the limit|limit of [0-9]" "$log"; then
 		note "→ Бесплатный Apple ID разрешает 3 своих приложения на iPhone и 10 новых ID в неделю."
 		note "  Удали с iPhone другие приложения, установленные из Xcode, или подожди несколько дней."
 	fi
@@ -712,22 +764,6 @@ if [ "$INSTALL_ONLY" = 0 ] && [ "$UPLOAD_ONLY" = 0 ]; then
 	good "Игра собрана"
 	[ "$STORE_MODE" = 0 ] || check_store_team
 fi
-
-# Leaves in APP the app Unreal made, taking it out of the .ipa if it made one.
-open_app() {  # .app or .ipa
-	APP="$1"
-	case "$APP" in
-		*.ipa)
-			rm -rf "$LOG_DIR/ipa" && mkdir -p "$LOG_DIR/ipa"
-			ditto -x -k "$APP" "$LOG_DIR/ipa" || fail "не смог распаковать $APP."
-			APP="$(ls -d "$LOG_DIR/ipa/Payload/"*.app 2>/dev/null | head -n 1)"
-			[ -n "$APP" ] || fail "в архиве нет приложения."
-			;;
-	esac
-}
-
-# The packaged app carries the cooked game data; an app without it opens to a black screen.
-has_game_data() { [ -n "$(find "$1" \( -name '*.utoc' -o -name '*.pak' \) 2>/dev/null | head -n 1)" ]; }
 
 # Signs the archive for the App Store and uploads it with the Apple ID in Xcode. Xcode makes the
 # App Store certificate and profile itself and gives the build the next free build number.
